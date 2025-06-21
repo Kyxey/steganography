@@ -1,10 +1,10 @@
-# Stenography
+# Steganography
 
-This CLI-based tool does stenography on images. It performs both encrypting and decrypting processes.
+This CLI-based tool does Steganography on images. It performs both encrypting and decrypting processes.
 
 ## Table of Contents
 
-- [Stenography](#stenography)
+- [Steganography](#steganography)
   - [Table of Contents](#table-of-contents)
   - [Getting Started](#getting-started)
     - [Prerequisites](#prerequisites)
