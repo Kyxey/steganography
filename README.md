@@ -35,14 +35,14 @@ You can install the required libraries and tools (e.g. OpenSSL and it's developm
 **macOS**:
 
 ```bash
-brew install openssl && brew unlink openssl && brew link openssl --force && brew install libffi && brew install libpng
+brew install openssl && brew unlink openssl && brew link openssl --force && brew install libffi libpng libjpeg
 ```
 
 **Linux**:
 
 ```bash
 sudo apt update
-sudo apt install -y libssl-dev libffi-dev libpng-dev
+sudo apt install -y libssl-dev libffi-dev libpng-dev libjpeg-dev
 ```
 
 ### Compiling
@@ -57,7 +57,9 @@ gcc steg.c -o steg \
     -L$(brew --prefix openssl)/lib \
     -I$(brew --prefix libpng)/include \
     -L$(brew --prefix libpng)/lib \
-    -lssl -lcrypto -lpng
+    -I$(brew --prefix libjpeg)/include \
+    -L$(brew --prefix libjpeg)/lib \
+    -lssl -lcrypto -lpng -ljpeg
 ```
 
 **Linux**:
@@ -66,7 +68,7 @@ gcc steg.c -o steg \
 gcc steg.c -o steg \
     -I/usr/include \
     -L/usr/lib \
-    -lssl -lcrypto -lpng
+    -lssl -lcrypto -lpng -ljpeg
 ```
 
 ## Usage
@@ -77,7 +79,7 @@ Using the app is very simple and straightforward. It has the two phases of encry
 
 The app currently has some serious limitations. Some of the most important ones are listed below:
 
-- It only supports `BMP` and `PNG` images.
+- It only supports `BMP`, `PNG` and `JPG` images.
 - The message string is limited in size.
 
 ### General Usage
@@ -128,7 +130,7 @@ Decrypted Message: My important, secret message!
 
 The following features are to be implemented soon:
 
-- Support more image types such as `JPG`.
+- Support more image types such as `GIF`.
 - Increase the message size without causing memory leaks and unpredicted behavior.
 - Separate the code across multiple files and maintain a good folder structure for better readability and maintainability.
 

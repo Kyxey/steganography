@@ -7,11 +7,15 @@
 #include <openssl/rand.h>
 #include <openssl/err.h>
 #include <png.h>
+#include <jpeglib.h>
+#include <jerror.h>
 
 #define MAX_MSG_SIZE 1024
 #define HASH_SIZE 32
 #define IV_SIZE 16
 #define LENGTH_HEADER_BITS 32
+#define JPEG_MARKER_ID 0xE1 // Use APP1 marker
+#define JPEG_MARKER_TAG "STEGO"
 
 const char *get_file_ext(const char *filename)
 {
@@ -135,6 +139,7 @@ int embed_message_png(const char *infile, const char *outfile, const char *msg, 
     if ((total_len * 8 + LENGTH_HEADER_BITS) > (width * height * 3))
         return 0;
 
+    // Embed length in first 32 LSBs of pixel data
     for (int i = 0; i < LENGTH_HEADER_BITS; i++)
     {
         int idx = i;
@@ -148,6 +153,7 @@ int embed_message_png(const char *infile, const char *outfile, const char *msg, 
     memcpy(combined, iv, IV_SIZE);
     memcpy(combined + IV_SIZE, ciphertext, enc_len);
 
+    // Embed encrypted data bits (IV + ciphertext)
     for (int i = 0; i < total_len * 8; i++)
     {
         int idx = i + LENGTH_HEADER_BITS;
@@ -217,6 +223,7 @@ int extract_message_png(const char *infile, const char *key)
 
     int total_len = 0;
 
+    // Read 32-bit length header from LSBs
     for (int i = 0; i < LENGTH_HEADER_BITS; i++)
     {
         int idx = i;
@@ -230,6 +237,8 @@ int extract_message_png(const char *infile, const char *key)
         return 0;
 
     unsigned char *combined = malloc(total_len);
+
+    // Extract hidden data bits into combined buffer
     for (int i = 0; i < total_len * 8; i++)
     {
         int idx = i + LENGTH_HEADER_BITS;
@@ -472,6 +481,158 @@ int extract_message_bmp(const char *infile, const char *key)
     return 1;
 }
 
+int embed_message_jpg(const char *infile, const char *outfile, const char *msg, const char *key)
+{
+    FILE *in = fopen(infile, "rb");
+    if (!in)
+        return 0;
+
+    struct jpeg_decompress_struct cinfo;
+    struct jpeg_error_mgr jerr;
+    cinfo.err = jpeg_std_error(&jerr);
+    jpeg_create_decompress(&cinfo);
+    jpeg_stdio_src(&cinfo, in);
+    jpeg_read_header(&cinfo, TRUE);
+    jpeg_start_decompress(&cinfo);
+    int width = cinfo.output_width;
+    int height = cinfo.output_height;
+    int comps = cinfo.output_components;
+    int row_stride = width * comps;
+
+    unsigned char *image_buffer = malloc(row_stride * height);
+    for (int i = 0; i < height; i++)
+    {
+        unsigned char *rowptr = image_buffer + i * row_stride;
+        jpeg_read_scanlines(&cinfo, &rowptr, 1);
+    }
+    jpeg_finish_decompress(&cinfo);
+    jpeg_destroy_decompress(&cinfo);
+    fclose(in);
+
+    unsigned char hash[HASH_SIZE];
+    sha256((const unsigned char *)msg, strlen(msg), hash);
+    int payload_len = strlen(msg) + HASH_SIZE;
+    unsigned char plaintext[MAX_MSG_SIZE];
+    memcpy(plaintext, msg, strlen(msg));
+    memcpy(plaintext + strlen(msg), hash, HASH_SIZE);
+
+    unsigned char iv[IV_SIZE];
+    if (!RAND_bytes(iv, IV_SIZE))
+        return 0;
+
+    unsigned char ciphertext[MAX_MSG_SIZE + EVP_MAX_BLOCK_LENGTH];
+    int enc_len = aes_encrypt(plaintext, payload_len, key, ciphertext, iv);
+    int total_len = strlen(JPEG_MARKER_TAG) + IV_SIZE + enc_len;
+
+    unsigned char *marker_data = malloc(total_len);
+    memcpy(marker_data, JPEG_MARKER_TAG, strlen(JPEG_MARKER_TAG));
+    memcpy(marker_data + strlen(JPEG_MARKER_TAG), iv, IV_SIZE);
+    memcpy(marker_data + strlen(JPEG_MARKER_TAG) + IV_SIZE, ciphertext, enc_len);
+
+    FILE *out = fopen(outfile, "wb");
+    if (!out)
+        return 0;
+
+    struct jpeg_compress_struct cinfo_out;
+    struct jpeg_error_mgr jerr_out;
+    cinfo_out.err = jpeg_std_error(&jerr_out);
+    jpeg_create_compress(&cinfo_out);
+    jpeg_stdio_dest(&cinfo_out, out);
+
+    cinfo_out.image_width = width;
+    cinfo_out.image_height = height;
+    cinfo_out.input_components = comps;
+    cinfo_out.in_color_space = (comps == 3) ? JCS_RGB : JCS_GRAYSCALE;
+
+    jpeg_set_defaults(&cinfo_out);
+    jpeg_set_quality(&cinfo_out, 90, TRUE);
+
+    jpeg_start_compress(&cinfo_out, TRUE);
+
+    // Insert marker
+    jpeg_write_marker(&cinfo_out, JPEG_MARKER_ID, marker_data, total_len);
+
+    for (int i = 0; i < height; i++)
+    {
+        unsigned char *rowptr = image_buffer + i * row_stride;
+        jpeg_write_scanlines(&cinfo_out, &rowptr, 1);
+    }
+
+    jpeg_finish_compress(&cinfo_out);
+    jpeg_destroy_compress(&cinfo_out);
+
+    fclose(out);
+    free(image_buffer);
+    free(marker_data);
+    return 1;
+}
+
+int extract_message_jpg(const char *infile, const char *key)
+{
+    FILE *in = fopen(infile, "rb");
+    if (!in)
+        return 0;
+
+    struct jpeg_decompress_struct cinfo;
+    struct jpeg_error_mgr jerr;
+    cinfo.err = jpeg_std_error(&jerr);
+    jpeg_create_decompress(&cinfo);
+    jpeg_save_markers(&cinfo, JPEG_MARKER_ID, 0xFFFF);
+    jpeg_stdio_src(&cinfo, in);
+    jpeg_read_header(&cinfo, TRUE);
+
+    jpeg_saved_marker_ptr marker = cinfo.marker_list;
+    while (marker)
+    {
+        if (marker->marker == JPEG_MARKER_ID && marker->data_length > strlen(JPEG_MARKER_TAG))
+        {
+            if (memcmp(marker->data, JPEG_MARKER_TAG, strlen(JPEG_MARKER_TAG)) == 0)
+            {
+                unsigned char *iv = marker->data + strlen(JPEG_MARKER_TAG);
+                unsigned char *cipher = iv + IV_SIZE;
+                int cipher_len = marker->data_length - strlen(JPEG_MARKER_TAG) - IV_SIZE;
+
+                unsigned char plaintext[MAX_MSG_SIZE];
+                int dec_len = aes_decrypt(cipher, cipher_len, key, plaintext, iv);
+                if (dec_len <= HASH_SIZE)
+                {
+                    jpeg_destroy_decompress(&cinfo);
+                    fclose(in);
+                    return 0;
+                }
+
+                unsigned char extracted_hash[HASH_SIZE];
+                memcpy(extracted_hash, plaintext + dec_len - HASH_SIZE, HASH_SIZE);
+                plaintext[dec_len - HASH_SIZE] = '\0';
+
+                unsigned char calc_hash[HASH_SIZE];
+                sha256(plaintext, dec_len - HASH_SIZE, calc_hash);
+
+                if (memcmp(extracted_hash, calc_hash, HASH_SIZE) == 0)
+                {
+                    printf("Decrypted Message: %s\n", plaintext);
+                    jpeg_destroy_decompress(&cinfo);
+                    fclose(in);
+                    return 1;
+                }
+                else
+                {
+                    fprintf(stderr, "Decryption failed: Incorrect key or data corrupted.\n");
+                    jpeg_destroy_decompress(&cinfo);
+                    fclose(in);
+                    return 0;
+                }
+            }
+        }
+        marker = marker->next;
+    }
+
+    jpeg_destroy_decompress(&cinfo);
+    fclose(in);
+    fprintf(stderr, "No embedded message found in JPEG.");
+    return 0;
+}
+
 int main(int argc, char *argv[])
 {
     char *method = NULL, *input_file = NULL, *output_file = NULL, *passkey = NULL, *message = NULL;
@@ -517,6 +678,13 @@ int main(int argc, char *argv[])
             else
                 fprintf(stderr, "Failed to embed message in BMP.\n");
         }
+        else if (strcasecmp(ext, "jpg") == 0 || strcasecmp(ext, "jpeg") == 0)
+        {
+            if (embed_message_jpg(input_file, output_file, message, passkey))
+                printf("Message successfully embedded in JPG.\n");
+            else
+                fprintf(stderr, "Failed to embed message in JPG.\n");
+        }
         else
         {
             fprintf(stderr, "Unsupported format for encryption: %s\n", ext);
@@ -533,6 +701,11 @@ int main(int argc, char *argv[])
         {
             if (!extract_message_bmp(input_file, passkey))
                 fprintf(stderr, "Failed to extract message from BMP.\n");
+        }
+        else if (strcasecmp(ext, "jpg") == 0 || strcasecmp(ext, "jpeg") == 0)
+        {
+            if (!extract_message_jpg(input_file, passkey))
+                fprintf(stderr, "Failed to extract message from JPG.\n");
         }
         else
         {
