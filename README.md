@@ -138,7 +138,6 @@ The following features are to be implemented soon:
 - Make the encryption more secure.
 - Write unit tests.
 - Write integration tests.
-- Add proper comments to the code.
 
 ## Contributions
 

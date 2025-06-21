@@ -10,30 +10,59 @@
 #include <jpeglib.h>
 #include <jerror.h>
 
-#define MAX_MSG_SIZE 1024
-#define HASH_SIZE 32
-#define IV_SIZE 16
-#define LENGTH_HEADER_BITS 32
-#define JPEG_MARKER_ID 0xE1 // Use APP1 marker
-#define JPEG_MARKER_TAG "STEGO"
+#define MAX_MSG_SIZE 1024       // Maximum message size (in bytes) for the hidden message
+#define HASH_SIZE 32            // Size of SHA-256 hash in bytes
+#define IV_SIZE 16              // Initialization vector (IV) size for AES (16 bytes)
+#define LENGTH_HEADER_BITS 32   // Number of bits reserved for storing data length
+#define JPEG_MARKER_ID 0xE1     // JPEG APP1 marker code used for steganography
+#define JPEG_MARKER_TAG "STEGO" // Tag to identify custom JPEG marker containing hidden data
 
+/*
+ * get_file_ext - Extract the file extension from a filename string.
+ * @filename: input file name string.
+ * Returns: pointer to the extension substring (after the last '.'),
+ *          or an empty string if no extension is found.
+ */
 const char *get_file_ext(const char *filename)
 {
     const char *dot = strrchr(filename, '.');
     return (!dot || dot == filename) ? "" : dot + 1;
 }
 
+/*
+ * handleErrors - Print OpenSSL error messages to stderr and abort the program.
+ * (No parameters.)
+ * Returns: This function does not return (it terminates the program).
+ */
 void handleErrors()
 {
     ERR_print_errors_fp(stderr);
     abort();
 }
 
+/*
+ * sha256 - Compute SHA-256 hash of the given data buffer.
+ * @data: pointer to the input data buffer.
+ * @len: length of the data in bytes.
+ * @out_hash: output buffer (32 bytes) to store the hash.
+ * Returns: 1 on success (hash is stored in out_hash), 0 on failure.
+ */
 int sha256(const unsigned char *data, size_t len, unsigned char *out_hash)
 {
     return SHA256(data, len, out_hash) != NULL;
 }
 
+/*
+ * aes_encrypt - Encrypt a plaintext buffer using AES-256-CBC.
+ * @plaintext: pointer to the data to encrypt.
+ * @plaintext_len: length of the plaintext in bytes.
+ * @passkey: null-terminated passphrase used to derive the encryption key.
+ * @ciphertext: output buffer to store the encrypted data.
+ * @iv: output buffer to store the generated IV (16 bytes).
+ * Returns: number of bytes written to ciphertext (ciphertext length).
+ *
+ * Note: The key and IV are derived from the passkey using a SHA-256 based KDF (EVP_BytesToKey).
+ */
 int aes_encrypt(const unsigned char *plaintext, int plaintext_len, const char *passkey, unsigned char *ciphertext, unsigned char *iv)
 {
     EVP_CIPHER_CTX *ctx;
@@ -56,6 +85,15 @@ int aes_encrypt(const unsigned char *plaintext, int plaintext_len, const char *p
     return ciphertext_len;
 }
 
+/*
+ * aes_decrypt - Decrypt data using AES-256-CBC.
+ * @ciphertext: pointer to the encrypted data buffer.
+ * @ciphertext_len: length of the ciphertext in bytes.
+ * @passkey: passphrase used to derive the decryption key (must match encryption passkey).
+ * @plaintext: output buffer to store the decrypted plaintext.
+ * @iv: initialization vector used for decryption (16 bytes).
+ * Returns: number of bytes in the decrypted plaintext, or -1 if decryption fails.
+ */
 int aes_decrypt(const unsigned char *ciphertext, int ciphertext_len, const char *passkey, unsigned char *plaintext, unsigned char *iv)
 {
     EVP_CIPHER_CTX *ctx;
@@ -82,6 +120,18 @@ int aes_decrypt(const unsigned char *ciphertext, int ciphertext_len, const char 
     return plaintext_len;
 }
 
+/*
+ * embed_message_png - Hide an encrypted message inside a PNG image.
+ * @infile: path to the input PNG image file.
+ * @outfile: path to save the output PNG image with the hidden message.
+ * @msg: the null-terminated message string to hide.
+ * @key: the passphrase for encrypting the message.
+ * Returns: 1 on success, 0 on failure.
+ *
+ * This function encrypts the given message (appending a SHA-256 hash for integrity) using AES-256-CBC.
+ * The resulting IV and ciphertext are then embedded into the least significant bits of the image's pixel data.
+ * The length of the hidden data (IV + ciphertext) is stored in the first LENGTH_HEADER_BITS (32) pixel LSBs.
+ */
 int embed_message_png(const char *infile, const char *outfile, const char *msg, const char *key)
 {
     FILE *fp = fopen(infile, "rb");
@@ -100,6 +150,7 @@ int embed_message_png(const char *infile, const char *outfile, const char *msg, 
     png_byte color_type = png_get_color_type(png, info);
     png_byte bit_depth = png_get_bit_depth(png, info);
 
+    // Normalize PNG to 8-bit RGBA (strip 16-bit, expand palette/gray, add full alpha)
     if (bit_depth == 16)
         png_set_strip_16(png);
     if (color_type == PNG_COLOR_TYPE_PALETTE)
@@ -120,26 +171,35 @@ int embed_message_png(const char *infile, const char *outfile, const char *msg, 
     png_read_image(png, rows);
     fclose(fp);
 
+    // Compute SHA-256 hash of the message (for integrity checking)
     unsigned char hash[HASH_SIZE];
     sha256((const unsigned char *)msg, strlen(msg), hash);
 
     int payload_len = strlen(msg) + HASH_SIZE;
     unsigned char plaintext[MAX_MSG_SIZE];
+
+    // Copy message and its hash into a plaintext buffer
     memcpy(plaintext, msg, strlen(msg));
     memcpy(plaintext + strlen(msg), hash, HASH_SIZE);
 
+    // Generate a random IV for AES encryption
     unsigned char iv[IV_SIZE];
     if (!RAND_bytes(iv, IV_SIZE))
         return 0;
 
     unsigned char ciphertext[MAX_MSG_SIZE + EVP_MAX_BLOCK_LENGTH];
+
+    // Encrypt the plaintext (message+hash) using the given passphrase
     int enc_len = aes_encrypt(plaintext, payload_len, key, ciphertext, iv);
 
     int total_len = IV_SIZE + enc_len;
+
+    // Ensure the image can accommodate the encrypted data (length + data bits)
     if ((total_len * 8 + LENGTH_HEADER_BITS) > (width * height * 3))
         return 0;
 
-    // Embed length in first 32 LSBs of pixel data
+    // Embed the length of the hidden data into the first 32 pixel LSBs
+    // Only uses RGB channels of pixels (alpha channel is not modified)
     for (int i = 0; i < LENGTH_HEADER_BITS; i++)
     {
         int idx = i;
@@ -153,7 +213,7 @@ int embed_message_png(const char *infile, const char *outfile, const char *msg, 
     memcpy(combined, iv, IV_SIZE);
     memcpy(combined + IV_SIZE, ciphertext, enc_len);
 
-    // Embed encrypted data bits (IV + ciphertext)
+    // Embed the encrypted payload (IV + ciphertext) bit-by-bit into the image pixels
     for (int i = 0; i < total_len * 8; i++)
     {
         int idx = i + LENGTH_HEADER_BITS;
@@ -183,6 +243,16 @@ int embed_message_png(const char *infile, const char *outfile, const char *msg, 
     return 1;
 }
 
+/*
+ * extract_message_png - Extract a hidden message from a PNG image.
+ * @infile: path to the PNG image file containing a hidden message.
+ * @key: the passphrase used to encrypt the hidden message.
+ * Returns: 1 if a hidden message was successfully extracted, 0 on failure.
+ *
+ * This function reads the 32-bit length from the image's pixel LSBs, then extracts that many bytes of hidden data from
+ * the pixel array. It decrypts the data with the given key and verifies the SHA-256 hash appended to the message.
+ * If the hash is correct, the decrypted message is printed to stdout.
+ */
 int extract_message_png(const char *infile, const char *key)
 {
     FILE *fp = fopen(infile, "rb");
@@ -201,6 +271,7 @@ int extract_message_png(const char *infile, const char *key)
     png_byte color_type = png_get_color_type(png, info);
     png_byte bit_depth = png_get_bit_depth(png, info);
 
+    // Prepare PNG image data to 8-bit RGBA format (same conversions as embedding)
     if (bit_depth == 16)
         png_set_strip_16(png);
     if (color_type == PNG_COLOR_TYPE_PALETTE)
@@ -224,6 +295,7 @@ int extract_message_png(const char *infile, const char *key)
     int total_len = 0;
 
     // Read 32-bit length header from LSBs
+    // (Only RGB channels are used for embedding; alpha channel is unchanged)
     for (int i = 0; i < LENGTH_HEADER_BITS; i++)
     {
         int idx = i;
@@ -266,6 +338,7 @@ int extract_message_png(const char *infile, const char *key)
 
     if (memcmp(extracted_hash, calc_hash, HASH_SIZE) != 0)
     {
+        // Hash mismatch: output data is invalid (incorrect key or corrupted image data)
         fprintf(stderr, "Decryption failed: Incorrect key or data corrupted.\n");
         return 0;
     }
@@ -278,6 +351,18 @@ int extract_message_png(const char *infile, const char *key)
     return 1;
 }
 
+/*
+ * embed_message_bmp - Hide an encrypted message inside a BMP image.
+ * @infile: path to the input BMP file.
+ * @outfile: path to save the output BMP file with the hidden message.
+ * @msg: the message string to hide.
+ * @key: the passphrase for encrypting the message.
+ * Returns: 1 on success, 0 on failure.
+ *
+ * This function encrypts the message (with a SHA-256 hash for integrity) using AES-256-CBC,
+ * then embeds the IV and ciphertext into the BMP's pixel data. It uses the LSB of each byte in the pixel array to store the bits.
+ * The length of the hidden data is stored in the LSB of the first 32 bytes of the pixel data.
+ */
 int embed_message_bmp(const char *infile, const char *outfile, const char *msg, const char *key)
 {
     FILE *in = fopen(infile, "rb");
@@ -304,18 +389,22 @@ int embed_message_bmp(const char *infile, const char *outfile, const char *msg, 
         free(buffer);
         return 0;
     }
+
     // Read BMP header fields
     unsigned int offset = (unsigned char)buffer[10] | ((unsigned char)buffer[11] << 8) |
                           ((unsigned char)buffer[12] << 16) | ((unsigned char)buffer[13] << 24);
     unsigned short bpp = (unsigned char)buffer[28] | ((unsigned char)buffer[29] << 8);
     unsigned int compression = (unsigned char)buffer[30] | ((unsigned char)buffer[31] << 8) |
                                ((unsigned char)buffer[32] << 16) | ((unsigned char)buffer[33] << 24);
+
+    // Only 24-bit or 32-bit uncompressed BMP files are supported
     if (compression != 0 || (bpp != 24 && bpp != 32))
     {
         free(buffer);
         return 0;
     }
 
+    // Compute hash of message and prepare plaintext (message + hash)
     unsigned char hash[HASH_SIZE];
     sha256((const unsigned char *)msg, strlen(msg), hash);
     int payload_len = strlen(msg) + HASH_SIZE;
@@ -323,6 +412,7 @@ int embed_message_bmp(const char *infile, const char *outfile, const char *msg, 
     memcpy(plaintext, msg, strlen(msg));
     memcpy(plaintext + strlen(msg), hash, HASH_SIZE);
 
+    // Generate random IV for encryption
     unsigned char iv[IV_SIZE];
     if (!RAND_bytes(iv, IV_SIZE))
     {
@@ -330,23 +420,27 @@ int embed_message_bmp(const char *infile, const char *outfile, const char *msg, 
         return 0;
     }
     unsigned char ciphertext[MAX_MSG_SIZE + EVP_MAX_BLOCK_LENGTH];
+
+    // Encrypt plaintext using AES-256-CBC with the given key
     int enc_len = aes_encrypt(plaintext, payload_len, key, ciphertext, iv);
     int total_len = IV_SIZE + enc_len;
     long cover_bytes = file_size - offset;
+
+    // Ensure the BMP has enough space for the encrypted data
     if ((long)total_len * 8 + LENGTH_HEADER_BITS > cover_bytes)
     {
         free(buffer);
         return 0;
     }
 
-    // Embed length in first 32 bytes of pixel data
+    // Embed the length of the hidden data into the LSB of the first 32 bytes
     for (int i = 0; i < LENGTH_HEADER_BITS; i++)
     {
         int bit = (total_len >> i) & 1;
         buffer[offset + i] = (buffer[offset + i] & ~1) | bit;
     }
 
-    // Embed encrypted data (IV + ciphertext) bits
+    // Embed the encrypted payload (IV + ciphertext) into the BMP pixel data (LSBs)
     unsigned char *combined = malloc(total_len);
     if (!combined)
     {
@@ -385,6 +479,16 @@ int embed_message_bmp(const char *infile, const char *outfile, const char *msg, 
     return 1;
 }
 
+/*
+ * extract_message_bmp - Extract a hidden message from a BMP image.
+ * @infile: path to the BMP image file containing a hidden message.
+ * @key: the passphrase used to encrypt the hidden message.
+ * Returns: 1 if a hidden message was successfully extracted, 0 on failure.
+ *
+ * This function reads the 32-bit length from the LSB of the first 32 pixel bytes in the BMP data, then reconstructs the
+ * hidden data bits from the remaining pixel bytes. It decrypts this data and verifies the appended SHA-256 hash.
+ * If the hash matches, the original message is printed to stdout.
+ */
 int extract_message_bmp(const char *infile, const char *key)
 {
     FILE *in = fopen(infile, "rb");
@@ -416,6 +520,8 @@ int extract_message_bmp(const char *infile, const char *key)
     unsigned short bpp = (unsigned char)buffer[28] | ((unsigned char)buffer[29] << 8);
     unsigned int compression = (unsigned char)buffer[30] | ((unsigned char)buffer[31] << 8) |
                                ((unsigned char)buffer[32] << 16) | ((unsigned char)buffer[33] << 24);
+
+    // Only 24-bit or 32-bit uncompressed BMP files are supported
     if (compression != 0 || (bpp != 24 && bpp != 32))
     {
         free(buffer);
@@ -423,6 +529,8 @@ int extract_message_bmp(const char *infile, const char *key)
     }
 
     int total_len = 0;
+
+    // Read the hidden data length from the LSB of the first 32 pixel bytes
     for (int i = 0; i < LENGTH_HEADER_BITS; i++)
     {
         total_len |= (buffer[offset + i] & 1) << i;
@@ -442,6 +550,8 @@ int extract_message_bmp(const char *infile, const char *key)
         return 0;
     }
     memset(combined, 0, total_len);
+
+    // Reconstruct the hidden data bytes bit by bit from the pixel buffer
     for (int i = 0; i < total_len; i++)
     {
         for (int bit = 0; bit < 8; bit++)
@@ -469,6 +579,7 @@ int extract_message_bmp(const char *infile, const char *key)
     sha256(plaintext, dec_len - HASH_SIZE, calc_hash);
     if (memcmp(extracted_hash, calc_hash, HASH_SIZE) != 0)
     {
+        // If hashes do not match, the message is not valid (wrong key or tampered data)
         fprintf(stderr, "Decryption failed: Incorrect key or data corrupted.\n");
         free(buffer);
         free(combined);
@@ -481,6 +592,18 @@ int extract_message_bmp(const char *infile, const char *key)
     return 1;
 }
 
+/*
+ * embed_message_jpg - Hide an encrypted message inside a JPEG image.
+ * @infile: path to the input JPEG file.
+ * @outfile: path to save the output JPEG file with the hidden message.
+ * @msg: the message string to hide.
+ * @key: the passphrase for encrypting the message.
+ * Returns: 1 on success, 0 on failure.
+ *
+ * This function encrypts the message (with SHA-256 hash appended) using AES-256-CBC,
+ * and embeds the encrypted data into a custom JPEG APP1 marker. It adds a marker identified by 'STEGO' that contains
+ * the IV and ciphertext. The JPEG image is recompressed (with quality 90) to include this hidden data.
+ */
 int embed_message_jpg(const char *infile, const char *outfile, const char *msg, const char *key)
 {
     FILE *in = fopen(infile, "rb");
@@ -500,6 +623,8 @@ int embed_message_jpg(const char *infile, const char *outfile, const char *msg, 
     int row_stride = width * comps;
 
     unsigned char *image_buffer = malloc(row_stride * height);
+
+    // Decompress the JPEG image and read all scanlines into image_buffer
     for (int i = 0; i < height; i++)
     {
         unsigned char *rowptr = image_buffer + i * row_stride;
@@ -509,21 +634,28 @@ int embed_message_jpg(const char *infile, const char *outfile, const char *msg, 
     jpeg_destroy_decompress(&cinfo);
     fclose(in);
 
+    // Compute SHA-256 hash of the message for integrity
     unsigned char hash[HASH_SIZE];
     sha256((const unsigned char *)msg, strlen(msg), hash);
     int payload_len = strlen(msg) + HASH_SIZE;
     unsigned char plaintext[MAX_MSG_SIZE];
+
+    // Prepare plaintext by concatenating message and hash
     memcpy(plaintext, msg, strlen(msg));
     memcpy(plaintext + strlen(msg), hash, HASH_SIZE);
 
+    // Generate random IV for AES encryption
     unsigned char iv[IV_SIZE];
     if (!RAND_bytes(iv, IV_SIZE))
         return 0;
 
     unsigned char ciphertext[MAX_MSG_SIZE + EVP_MAX_BLOCK_LENGTH];
+
+    // Encrypt plaintext using AES-256-CBC
     int enc_len = aes_encrypt(plaintext, payload_len, key, ciphertext, iv);
     int total_len = strlen(JPEG_MARKER_TAG) + IV_SIZE + enc_len;
 
+    // Create marker data: "STEGO" tag + IV + ciphertext
     unsigned char *marker_data = malloc(total_len);
     memcpy(marker_data, JPEG_MARKER_TAG, strlen(JPEG_MARKER_TAG));
     memcpy(marker_data + strlen(JPEG_MARKER_TAG), iv, IV_SIZE);
@@ -549,7 +681,7 @@ int embed_message_jpg(const char *infile, const char *outfile, const char *msg, 
 
     jpeg_start_compress(&cinfo_out, TRUE);
 
-    // Insert marker
+    // Insert custom APP1 marker containing the hidden data
     jpeg_write_marker(&cinfo_out, JPEG_MARKER_ID, marker_data, total_len);
 
     for (int i = 0; i < height; i++)
@@ -567,6 +699,16 @@ int embed_message_jpg(const char *infile, const char *outfile, const char *msg, 
     return 1;
 }
 
+/*
+ * extract_message_jpg - Extract a hidden message from a JPEG image.
+ * @infile: path to the JPEG image file containing a hidden message.
+ * @key: the passphrase used to encrypt the hidden message.
+ * Returns: 1 if a hidden message is found and extracted, 0 if not found or on failure.
+ *
+ * This function scans the JPEG file for an APP1 marker starting with 'STEGO'. If found, it extracts the IV and ciphertext from
+ * the marker, decrypts the data with the provided key, and verifies the SHA-256 hash. If the hash is valid, the hidden message
+ * is printed to stdout.
+ */
 int extract_message_jpg(const char *infile, const char *key)
 {
     FILE *in = fopen(infile, "rb");
@@ -581,11 +723,13 @@ int extract_message_jpg(const char *infile, const char *key)
     jpeg_stdio_src(&cinfo, in);
     jpeg_read_header(&cinfo, TRUE);
 
+    // Iterate through saved markers to find the "STEGO" marker
     jpeg_saved_marker_ptr marker = cinfo.marker_list;
     while (marker)
     {
         if (marker->marker == JPEG_MARKER_ID && marker->data_length > strlen(JPEG_MARKER_TAG))
         {
+            // STEGO marker found: retrieve IV and ciphertext from marker->data
             if (memcmp(marker->data, JPEG_MARKER_TAG, strlen(JPEG_MARKER_TAG)) == 0)
             {
                 unsigned char *iv = marker->data + strlen(JPEG_MARKER_TAG);
@@ -594,6 +738,8 @@ int extract_message_jpg(const char *infile, const char *key)
 
                 unsigned char plaintext[MAX_MSG_SIZE];
                 int dec_len = aes_decrypt(cipher, cipher_len, key, plaintext, iv);
+
+                // Decrypt the ciphertext; if failed or message too short, abort extraction
                 if (dec_len <= HASH_SIZE)
                 {
                     jpeg_destroy_decompress(&cinfo);
@@ -608,6 +754,7 @@ int extract_message_jpg(const char *infile, const char *key)
                 unsigned char calc_hash[HASH_SIZE];
                 sha256(plaintext, dec_len - HASH_SIZE, calc_hash);
 
+                // Verify integrity: compare extracted hash with computed hash of plaintext
                 if (memcmp(extracted_hash, calc_hash, HASH_SIZE) == 0)
                 {
                     printf("Decrypted Message: %s\n", plaintext);
@@ -633,9 +780,20 @@ int extract_message_jpg(const char *infile, const char *key)
     return 0;
 }
 
+/*
+ * main - Entry point of the steganography CLI application.
+ * @argc: number of command-line arguments.
+ * @argv: array of command-line argument strings.
+ * Returns: 0 on successful execution, or 1 on error (e.g., invalid usage or failure to process).
+ *
+ * This function parses the command-line arguments to determine the mode (encrypt or decrypt), input file, output file, passkey,
+ * and message (if encrypting). It then calls the appropriate embed or extract function for the given image format.
+ */
 int main(int argc, char *argv[])
 {
     char *method = NULL, *input_file = NULL, *output_file = NULL, *passkey = NULL, *message = NULL;
+
+    // Parse command-line options (-m, -i, -o, -p, -s)
     for (int i = 1; i < argc; i++)
     {
         if ((strcmp(argv[i], "-m") == 0 || strcmp(argv[i], "-M") == 0) && i + 1 < argc)
@@ -650,6 +808,7 @@ int main(int argc, char *argv[])
             message = argv[++i];
     }
 
+    // Validate required arguments are provided (method, input file, passkey)
     if (!method || !input_file || !passkey)
     {
         fprintf(stderr, "Usage: %s -m <method> -i <input> -p <passkey> [-s <message>] [-o <output>]\n", argv[0]);
@@ -657,13 +816,18 @@ int main(int argc, char *argv[])
     }
 
     const char *ext = get_file_ext(input_file);
+
+    // Encryption mode selected
     if (strcasecmp(method, "encrypt") == 0)
     {
+        // Check that message (-s) and output file (-o) are specified for encryption
         if (!message || !output_file)
         {
             fprintf(stderr, "Encryption requires -s <message> and -o <output>\n");
             return 1;
         }
+
+        // Call the appropriate embedding function based on the input file extension
         if (strcasecmp(ext, "png") == 0)
         {
             if (embed_message_png(input_file, output_file, message, passkey))
@@ -690,8 +854,11 @@ int main(int argc, char *argv[])
             fprintf(stderr, "Unsupported format for encryption: %s\n", ext);
         }
     }
+
+    // Decryption mode selected
     else if (strcasecmp(method, "decrypt") == 0)
     {
+        // Call the appropriate extraction function based on the input file extension
         if (strcasecmp(ext, "png") == 0)
         {
             if (!extract_message_png(input_file, passkey))
@@ -714,6 +881,7 @@ int main(int argc, char *argv[])
     }
     else
     {
+        // Handle unknown method input
         fprintf(stderr, "Unknown method: %s\n", method);
     }
 
