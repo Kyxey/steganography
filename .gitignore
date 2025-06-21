@@ -50,3 +50,9 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# I/O files
+*.bmp
+*.png
+*.jpg
+*.jpeg
