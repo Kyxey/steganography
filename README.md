@@ -14,6 +14,7 @@ This CLI-based tool does Steganography on images. It performs both encrypting an
     - [General Usage](#general-usage)
     - [Phase 1: Encryption](#phase-1-encryption)
     - [Phase 2: Decryption](#phase-2-decryption)
+  - [Folder Structure](#folder-structure)
   - [Next Steps](#next-steps)
   - [Contributions](#contributions)
   - [Legal Disclaimer](#legal-disclaimer)
@@ -52,7 +53,7 @@ Th command below builds and compiles the app while bundling it with the required
 **macOS**:
 
 ```bash
-gcc steg.c -o steg \
+gcc main.c bmp_handler.c png_handler.c jpg_handler.c crypto_utils.c -o steg \
     -I$(brew --prefix openssl)/include \
     -L$(brew --prefix openssl)/lib \
     -I$(brew --prefix libpng)/include \
@@ -65,7 +66,7 @@ gcc steg.c -o steg \
 **Linux**:
 
 ```bash
-gcc steg.c -o steg \
+gcc main.c bmp_handler.c png_handler.c jpg_handler.c crypto_utils.c -o steg \
     -I/usr/include \
     -L/usr/lib \
     -lssl -lcrypto -lpng -ljpeg
@@ -126,13 +127,21 @@ If the passkey is correct, you should see the message in the output like:
 Decrypted Message: My important, secret message!
 ```
 
+## Folder Structure
+
+The code is split into multiple files to maintain readability and scalability. The general folder structure is as follows:
+
+- **`headers/*`**: The header files that are required for declarations go into this directory.
+- **`[FILE_NAME].c`**: Any files that end with `.c` extension are the source files of the project.
+- **`main.c`**: The entry point of the application. It contains the options and arguments handling logic, as well as bundling the entire functionality in one place, from the split files.
+- Other files and folders in the root directory of the project are git, licensing and configuration files.
+
 ## Next Steps
 
 The following features are to be implemented soon:
 
 - Support more image types such as `GIF` and `WebP`.
 - Increase the message size without causing memory leaks and unpredicted behavior.
-- Separate the code across multiple files and maintain a good folder structure for better readability and maintainability.
 - Add a GUI.
 - Add a CLI help screen.
 - Make the encryption more secure.
