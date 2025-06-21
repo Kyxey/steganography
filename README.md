@@ -56,7 +56,6 @@ The app currently has some serious limitations. Some of the most important ones 
 
 - It only supports `BMP` images.
 - The message string is limited in size.
-- The encryption method isn't very safe. Use with caution
 
 ### General Usage
 
@@ -106,7 +105,6 @@ The following features are to be implemented soon:
 
 - Support more image types such as `PNG` and `JPG`.
 - Increase the message size without causing memory leaks and unpredicted behavior.
-- Support more and safer encryption methods such as `AES` and `SHA256`.
 
 ## Contributions
 
