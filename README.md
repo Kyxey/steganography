@@ -130,9 +130,15 @@ Decrypted Message: My important, secret message!
 
 The following features are to be implemented soon:
 
-- Support more image types such as `GIF`.
+- Support more image types such as `GIF` and `WebP`.
 - Increase the message size without causing memory leaks and unpredicted behavior.
 - Separate the code across multiple files and maintain a good folder structure for better readability and maintainability.
+- Add a GUI.
+- Add a CLI help screen.
+- Make the encryption more secure.
+- Write unit tests.
+- Write integration tests.
+- Add proper comments to the code.
 
 ## Contributions
 
