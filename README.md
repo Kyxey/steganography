@@ -27,24 +27,47 @@ This application is written with C programming language, and thus can be compile
 You'll need the following libraries and tools to be able to build and compile the code:
 
 - OpenSSL (For encrypting/decrypting the messages)
+- LibPNG (For processing `PNG` images)
 - GCC (Or any other modern C compilers)
 
-You can install OpenSSL and it's development tools, and get them ready for the compile with the following commands using `brew`:
+You can install the required libraries and tools (e.g. OpenSSL and it's development tools), and get them ready for the compile with the following commands:
+
+**macOS**:
 
 ```bash
-brew install openssl && brew unlink openssl && brew link openssl --force && brew install libffi
+brew install openssl && brew unlink openssl && brew link openssl --force && brew install libffi && brew install libpng
+```
+
+**Linux**:
+
+```bash
+sudo apt update
+sudo apt install -y libssl-dev libffi-dev libpng-dev
 ```
 
 ### Compiling
+
+Th command below builds and compiles the app while bundling it with the required libraries, and saves the output to a file named `steg` in the same directory.
+
+**macOS**:
 
 ```bash
 gcc steg.c -o steg \
     -I$(brew --prefix openssl)/include \
     -L$(brew --prefix openssl)/lib \
-    -lssl -lcrypto
+    -I$(brew --prefix libpng)/include \
+    -L$(brew --prefix libpng)/lib \
+    -lssl -lcrypto -lpng
 ```
 
-This command builds and compiles the app while bundling it with the required libraries, and saves the output to a file named `steg` in the same directory.
+**Linux**:
+
+```bash
+gcc steg.c -o steg \
+    -I/usr/include \
+    -L/usr/lib \
+    -lssl -lcrypto -lpng
+```
 
 ## Usage
 
@@ -54,7 +77,7 @@ Using the app is very simple and straightforward. It has the two phases of encry
 
 The app currently has some serious limitations. Some of the most important ones are listed below:
 
-- It only supports `BMP` images.
+- It only supports `BMP` and `PNG` images.
 - The message string is limited in size.
 
 ### General Usage
@@ -73,7 +96,9 @@ The options and arguments are defined as below:
 - **`-p` or `-P` - required**: The passkey to be used to either encrypt or decrypt the message to or from the image. For example: `MyStrongPassKey1234`.
 - **`-s` or `-S` - optional**: The string message that needs to be encrypted and then embedded into the image file. It is only required when using the `encrypt` method. Example: `"My important, secret message\!"`
 
-**IMPORTANT NOTE**: Don't forget to escape the special characters such as `!`, `/` etc. in the message string. This means to prefix the respective character with `\`, such as `\!` or `\/`.
+**IMPORTANT NOTE 1**: Don't forget to escape the special characters such as `!`, `/` etc. in the message string. This means to prefix the respective character with `\`, such as `\!` or `\/`.
+
+**IMPORTANT NOTE 2**: Please pay attention to the file extensions. The input and output files must have the exact same extensions, otherwise you'll end up with unexpected behavior.
 
 ### Phase 1: Encryption
 
@@ -103,8 +128,9 @@ Decrypted Message: My important, secret message!
 
 The following features are to be implemented soon:
 
-- Support more image types such as `PNG` and `JPG`.
+- Support more image types such as `JPG`.
 - Increase the message size without causing memory leaks and unpredicted behavior.
+- Separate the code across multiple files and maintain a good folder structure for better readability and maintainability.
 
 ## Contributions
 
